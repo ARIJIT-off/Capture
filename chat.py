@@ -5,6 +5,7 @@ import subprocess
 
 def load_clip():
     """Load CLIP model - much faster than LLaVA"""
+    print("[INFO] Loading CLIP model...")
     try:
         import torch
         import clip
@@ -29,7 +30,7 @@ def load_clip():
             return None, None, None
 
 def search_with_clip(analysis_data, user_query, model, preprocess, device):
-    """Use CLIP on motion windows only - motion-first filtering for accuracy"""
+    """Use CLIP on motion windows - optimized for incident detection"""
     import torch
     import clip
     from PIL import Image
@@ -38,23 +39,17 @@ def search_with_clip(analysis_data, user_query, model, preprocess, device):
     motion_windows = analysis_data.get("motion_windows", [])
     all_frames = analysis_data.get("frames", [])
     
-    # Filter out frame 0 (MOG2 false positive on first frame) and extreme outliers
-    motion_windows = [
-        f for f in motion_windows 
-        if f["frame_num"] > 0 and f.get("motion_score", 0) < 100000
-    ]
-    
     if not motion_windows:
-        print("[INFO] No valid motion detected. Searching all frames...")
-        search_frames = [f for f in all_frames if f["frame_num"] > 0]
+        print("[INFO] No motion detected. Searching all frames...")
+        search_frames = all_frames
     else:
-        print(f"[INFO] Found {len(motion_windows)} motion windows (filtered). Searching those first...")
+        print(f"[INFO] Found {len(motion_windows)} motion frames. Searching...")
         search_frames = motion_windows
 
     if not search_frames:
         return []
 
-    print(f"[INFO] Running CLIP search on {len(search_frames)} high-motion frames...")
+    print(f"[INFO] Running CLIP search on {len(search_frames)} frames...")
     print(f"[INFO] Query: '{user_query}'")
 
     # Encode the text query
@@ -89,17 +84,14 @@ def search_with_clip(analysis_data, user_query, model, preprocess, device):
             text_features /= text_features.norm(dim=-1, keepdim=True)
 
             # Use direct cosine similarity (0-1) instead of softmax
-            # softmax normalizes across frames making them all equal
-            similarity = (image_features @ text_features.T).squeeze(-1)  # Shape: [batch_size]
+            similarity = (image_features @ text_features.T).squeeze(-1)
 
         for j, (_, frame) in enumerate(images):
-            # Direct cosine similarity (0-1 range, already normalized)
             clip_score = float(similarity[j])
             motion = frame.get("motion_score", 0)
             
-            # Boost score based on motion (frames with movement rank higher)
-            # motion_score typically 300-5000 for moving objects
-            motion_multiplier = 1.0 + (min(motion, 2000) / 2000.0) * 0.5  # Max +0.5 boost
+            # Boost score based on motion
+            motion_multiplier = 1.0 + (min(motion, 2000) / 2000.0) * 0.5
             final_score = clip_score * motion_multiplier
             
             if final_score > 0.15:
@@ -107,7 +99,6 @@ def search_with_clip(analysis_data, user_query, model, preprocess, device):
                     "timestamp": frame["timestamp"],
                     "frame_num": frame["frame_num"],
                     "score": round(final_score, 3),
-                    "clip_score": round(clip_score, 3),
                     "motion_score": motion
                 })
 
@@ -116,11 +107,12 @@ def search_with_clip(analysis_data, user_query, model, preprocess, device):
 
     print("")
 
-    # Sort by score descending, with motion as tiebreaker
+    # Sort by score descending, preferring earlier frames within motion sequences
     matches.sort(key=lambda x: (
-        x["motion_score"] > 10000,  # Primary: high-motion frames first
-        x["score"],                  # Secondary: CLIP score
-        -x["motion_score"]           # Tertiary: higher motion wins ties
+        x["motion_score"] > 10000,  # High-motion frames first
+        x["score"],                  # CLIP score second
+        -x["motion_score"],          # Higher motion wins
+        -x["timestamp"]              # Earlier timestamps preferred (action start)
     ), reverse=True)
 
     # Deduplicate - merge matches within 2 seconds
@@ -130,8 +122,8 @@ def search_with_clip(analysis_data, user_query, model, preprocess, device):
             deduped.append(m)
 
     if not matches:
-        print(f"[INFO] No matches found in motion windows with query '{user_query}'")
-        print(f"[INFO] Try: 'bottle', 'person', 'hand', or 'object'")
+        print(f"[INFO] No matches found with query '{user_query}'")
+        print(f"[INFO] Try: 'bottle', 'person', 'hand', 'stealing', etc.")
 
     return deduped
 

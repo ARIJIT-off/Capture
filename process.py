@@ -25,11 +25,21 @@ def process_video(video_path):
         frame_interval = max(1, int(fps * 2))
         extracted = 0
         prev_frame = None
+        
+        # Skip first 60 frames (2 seconds) to let MOG2 warm up and avoid false positives
+        warmup_frames = int(fps * 2)
+        print(f"[INFO] Skipping first {warmup_frames} frames for MOG2 warmup...")
 
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
+
+            # Let MOG2 learn background without recording
+            if frame_count < warmup_frames:
+                fgbg.apply(frame)
+                frame_count += 1
+                continue
 
             if frame_count % frame_interval == 0:
                 timestamp = frame_count / fps
@@ -73,10 +83,19 @@ def process_video(video_path):
 
         cap.release()
 
+        # Adaptive motion threshold: use 75th percentile of motion_score
+        if frames:
+            motion_scores = sorted([f["motion_score"] for f in frames])
+            percentile_75 = motion_scores[int(len(motion_scores) * 0.75)]
+            threshold = max(percentile_75 * 0.6, 100)  # At least 100
+            print(f"[INFO] Motion threshold (75th percentile): {int(threshold)}")
+        else:
+            threshold = 300
+
         # Motion windows = frames with significant movement
         motion_windows = [
             f for f in frames
-            if f["motion_score"] > 300 or f["flow_score"] > 500
+            if f["motion_score"] > threshold or f["flow_score"] > 500
         ]
 
         # Sort by combined score

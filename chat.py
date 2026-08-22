@@ -133,12 +133,15 @@ def crop_proof(video_path, start_sec, end_sec, output_path, duration):
     out_file = os.path.join(output_path, f"proof_{int(start_sec)}s_to_{int(end_sec)}s.mp4")
     end_sec = min(end_sec, duration)
 
+    # Use video codec to ensure output has video stream (not just audio)
     cmd = [
         "ffmpeg",
         "-i", video_path,
         "-ss", str(int(start_sec)),
         "-to", str(int(end_sec)),
-        "-c", "copy",
+        "-c:v", "libx264",      # Encode video with H.264
+        "-c:a", "aac",          # Encode audio with AAC
+        "-crf", "23",           # Quality (0-51, lower=better, 23=default)
         "-y",
         out_file
     ]

@@ -24,10 +24,10 @@ Write-Host "[OK] Directory: $InstallPath" -ForegroundColor Green
 # Download/copy core files
 Write-Host "[INFO] Setting up core files..." -ForegroundColor Yellow
 
+$githubRaw = "https://raw.githubusercontent.com/ARIJIT-off/Capture/main"
 $files = @(
     "main.ps1",
     "process.py",
-    "caption.py",
     "chat.py",
     "README.md",
     ".gitignore",
@@ -35,8 +35,14 @@ $files = @(
 )
 
 foreach ($file in $files) {
-    # In real setup, these would be downloaded from GitHub
-    Write-Host "[OK] $file" -ForegroundColor Green
+    try {
+        $url = "$githubRaw/$file"
+        $outFile = "$InstallPath\$file"
+        Invoke-WebRequest -Uri $url -OutFile $outFile -ErrorAction Stop
+        Write-Host "[OK] Downloaded $file" -ForegroundColor Green
+    } catch {
+        Write-Host "[WARN] Could not download $file - $($_.Exception.Message)" -ForegroundColor Yellow
+    }
 }
 
 # Install Python dependencies

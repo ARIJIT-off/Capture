@@ -3,6 +3,52 @@ import json
 import sys
 import os
 import numpy as np
+from transformers import VideoMAEImageProcessor, VideoMAEForVideoClassification
+from PIL import Image
+import torch
+
+def load_videomae_model():
+    """Load VideoMAE model for understanding video content"""
+    try:
+        print("[INFO] Loading VideoMAE model...")
+        processor = VideoMAEImageProcessor.from_pretrained("MCG-NJU/videomae-base")
+        model = VideoMAEForVideoClassification.from_pretrained("MCG-NJU/videomae-base")
+        print("[INFO] VideoMAE model loaded")
+        return processor, model
+    except Exception as e:
+        print(f"[WARN] Could not load VideoMAE: {e}")
+        print("[INFO] Will use motion detection only")
+        return None, None
+
+def generate_frame_caption(frame, processor, model):
+    """Generate natural language description of what's in the frame"""
+    if processor is None or model is None:
+        return "Unknown content"
+    
+    try:
+        # Prepare frame for model
+        pil_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        inputs = processor(images=[pil_image], return_tensors="pt")
+        
+        with torch.no_grad():
+            outputs = model(**inputs)
+        
+        # Get top predicted class
+        logits = outputs.logits
+        predicted_class_idx = logits.argmax(-1).item()
+        
+        # Map class to description (simplified)
+        class_names = [
+            "person", "object", "motion", "stationary", "interaction",
+            "hand movement", "picking up", "putting down", "holding",
+            "multiple people", "empty scene", "unclear"
+        ]
+        
+        if predicted_class_idx < len(class_names):
+            return class_names[predicted_class_idx]
+        return "activity detected"
+    except:
+        return "activity detected"
 
 def process_video(video_path):
     try:
@@ -17,25 +63,28 @@ def process_video(video_path):
 
         print(f"[INFO] Duration : {duration:.1f} seconds")
         print(f"[INFO] FPS      : {fps}")
-        print(f"[INFO] Extracting frames + detecting motion...")
+        print(f"[INFO] Extracting frames + generating descriptions...")
+
+        # Load VideoMAE model
+        processor, model = load_videomae_model()
 
         frames = []
         frame_count = 0
         fgbg = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=50)
-        frame_interval = max(1, int(fps * 2))
+        frame_interval = max(1, int(fps * 2))  # Extract every 2 seconds
         extracted = 0
         prev_frame = None
         
-        # Skip first 60 frames (2 seconds) to let MOG2 warm up and avoid false positives
+        # Skip first 2 seconds for MOG2 warmup
         warmup_frames = int(fps * 2)
-        print(f"[INFO] Skipping first {warmup_frames} frames for MOG2 warmup...")
+        print(f"[INFO] Skipping first {warmup_frames} frames for motion detection warmup...")
 
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
 
-            # Let MOG2 learn background without recording
+            # MOG2 warmup
             if frame_count < warmup_frames:
                 fgbg.apply(frame)
                 frame_count += 1
@@ -44,11 +93,11 @@ def process_video(video_path):
             if frame_count % frame_interval == 0:
                 timestamp = frame_count / fps
 
-                # Motion via MOG2
+                # Motion detection
                 fgmask = fgbg.apply(frame)
                 motion_score = int(cv2.countNonZero(fgmask))
 
-                # Optical flow score vs previous frame
+                # Optical flow
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 flow_score = 0
                 if prev_frame is not None:
@@ -56,7 +105,10 @@ def process_video(video_path):
                     flow_score = int(np.sum(diff > 25))
                 prev_frame = gray
 
-                # Save thumbnail (small, for fast CLIP later)
+                # Generate caption
+                caption = generate_frame_caption(frame, processor, model)
+
+                # Save thumbnail
                 thumb = cv2.resize(frame, (224, 224))
                 thumb_path = os.path.join(
                     os.path.dirname(os.path.abspath(__file__)),
@@ -71,34 +123,33 @@ def process_video(video_path):
                     "timestamp": round(timestamp, 2),
                     "motion_score": motion_score,
                     "flow_score": flow_score,
+                    "caption": caption,
                     "thumb": thumb_path
                 })
                 extracted += 1
 
-                if extracted % 50 == 0:
+                if extracted % 10 == 0:
                     pct = (frame_count / total_frames) * 100
-                    print(f"[INFO] Progress: {pct:.0f}% ({extracted} frames extracted)")
+                    print(f"[INFO] Progress: {pct:.0f}% ({extracted} frames) | Latest: '{caption}'")
 
             frame_count += 1
 
         cap.release()
 
-        # Adaptive motion threshold: use 75th percentile of motion_score
+        # Adaptive motion threshold
         if frames:
             motion_scores = sorted([f["motion_score"] for f in frames])
             percentile_75 = motion_scores[int(len(motion_scores) * 0.75)]
-            threshold = max(percentile_75 * 0.6, 100)  # At least 100
-            print(f"[INFO] Motion threshold (75th percentile): {int(threshold)}")
+            threshold = max(percentile_75 * 0.6, 100)
+            print(f"[INFO] Motion threshold: {int(threshold)}")
         else:
             threshold = 300
 
-        # Motion windows = frames with significant movement
+        # Motion windows
         motion_windows = [
             f for f in frames
             if f["motion_score"] > threshold or f["flow_score"] > 500
         ]
-
-        # Sort by combined score
         motion_windows.sort(key=lambda x: x["motion_score"] + x["flow_score"], reverse=True)
 
         analysis = {

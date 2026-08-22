@@ -1,141 +1,152 @@
-# CAPTURE Main CLI Interface
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$videoPath = ""
+$outputPath = ""
+$analysisJson = "$scriptDir\analysis.json"
 
-$global:VideoPath = ""
-$global:OutputPath = "$env:USERPROFILE\Downloads\CAPTURE\output"
-$global:ProcessingComplete = $false
-$global:AnalysisData = $null
-$global:ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Load previous settings if they exist
+if (Test-Path "$scriptDir\.capture_config") {
+    $config = Get-Content "$scriptDir\.capture_config" | ConvertFrom-Json
+    $videoPath = $config.videoPath
+    $outputPath = $config.outputPath
+}
 
 function Show-Banner {
-    Clear-Host
+    Write-Host ""
     Write-Host "================================================================" -ForegroundColor Cyan
     Write-Host "   CAPTURE - Local CCTV Incident Extraction" -ForegroundColor Cyan
     Write-Host "   Local AI that finds incidents in long CCTV footage" -ForegroundColor Cyan
     Write-Host "   No cloud support - Fully offline" -ForegroundColor Cyan
     Write-Host "================================================================" -ForegroundColor Cyan
+    Write-Host ""
 }
 
 function Show-Menu {
+    Write-Host "MENU:" -ForegroundColor Yellow
+    Write-Host "  A - Set video footage path" -ForegroundColor Gray
+    Write-Host "  C - Set output folder for proof clips" -ForegroundColor Gray
+    Write-Host "  D - Start processing video" -ForegroundColor Gray
+    Write-Host "  P - Start querying/chatting about video" -ForegroundColor Gray
+    Write-Host "  E - Exit CAPTURE" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "MENU:" -ForegroundColor Cyan
-    Write-Host "  A - Set video footage path" -ForegroundColor Yellow
-    Write-Host "  C - Set output folder for proof clips" -ForegroundColor Yellow
-    Write-Host "  D - Start processing video" -ForegroundColor Yellow
-    Write-Host "  P - Start querying/chatting about video" -ForegroundColor Yellow
-    Write-Host "  E - Exit CAPTURE" -ForegroundColor Yellow
-    Write-Host ""
-    if ($global:VideoPath) {
-        Write-Host "  Video  : $($global:VideoPath)" -ForegroundColor Green
+    
+    if ($videoPath) {
+        Write-Host "  Video  : $videoPath" -ForegroundColor Green
     } else {
-        Write-Host "  Video  : NOT SET" -ForegroundColor Red
+        Write-Host "  Video  : (not set)" -ForegroundColor Red
     }
-    Write-Host "  Output : $($global:OutputPath)" -ForegroundColor Green
-    if ($global:ProcessingComplete) {
+    
+    if ($outputPath) {
+        Write-Host "  Output : $outputPath" -ForegroundColor Green
+    } else {
+        Write-Host "  Output : (not set)" -ForegroundColor Red
+    }
+    
+    if (Test-Path $analysisJson) {
         Write-Host "  Status : READY TO QUERY" -ForegroundColor Green
+    } elseif ($videoPath) {
+        Write-Host "  Status : READY TO PROCESS" -ForegroundColor Yellow
     } else {
-        Write-Host "  Status : NOT PROCESSED" -ForegroundColor Gray
+        Write-Host "  Status : SET VIDEO PATH" -ForegroundColor Red
     }
+    
     Write-Host ""
 }
 
-function Run-Process {
-    $pyScript = "$global:ScriptDir\process.py"
-    if (-not (Test-Path $pyScript)) {
-        Write-Host "X process.py not found in $global:ScriptDir" -ForegroundColor Red
-        return $null
-    }
-
-    Write-Host "Processing video..." -ForegroundColor Yellow
-    python $pyScript $global:VideoPath
-
-    $jsonPath = "$global:ScriptDir\analysis.json"
-    if (Test-Path $jsonPath) {
-        $data = Get-Content $jsonPath -Raw | ConvertFrom-Json
-        Write-Host "OK Processing complete" -ForegroundColor Green
-        return $data
+function Set-VideoPath {
+    Write-Host "Enter video file path (or drag file here):" -ForegroundColor Yellow
+    $path = Read-Host
+    $path = $path -replace '"', ''
+    
+    if (Test-Path $path) {
+        $videoPath = $path
+        Write-Host "[OK] Video path set" -ForegroundColor Green
+        Save-Config
     } else {
-        Write-Host "X Processing failed" -ForegroundColor Red
-        return $null
+        Write-Host "[ERROR] File not found: $path" -ForegroundColor Red
     }
 }
 
-function Run-Chat {
-    $pyScript = "$global:ScriptDir\chat.py"
-    if (-not (Test-Path $pyScript)) {
-        Write-Host "X chat.py not found in $global:ScriptDir" -ForegroundColor Red
+function Set-OutputPath {
+    Write-Host "Enter output folder path:" -ForegroundColor Yellow
+    $path = Read-Host
+    $path = $path -replace '"', ''
+    
+    New-Item -ItemType Directory -Force -Path $path | Out-Null
+    $outputPath = $path
+    Write-Host "[OK] Output path set" -ForegroundColor Green
+    Save-Config
+}
+
+function Start-Processing {
+    if (-not $videoPath) {
+        Write-Host "[ERROR] Video path not set. Choose 'A' first." -ForegroundColor Red
         return
     }
-
-    $jsonPath = "$global:ScriptDir\analysis.json"
-    python $pyScript $jsonPath $global:OutputPath
+    
+    if (-not $outputPath) {
+        $outputPath = "$scriptDir\output"
+        New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
+    }
+    
+    Write-Host "[INFO] Processing video..." -ForegroundColor Yellow
+    Write-Host "[INFO] This may take 1-3 minutes depending on video length..." -ForegroundColor Yellow
+    Write-Host ""
+    
+    python "$scriptDir\process.py" "$videoPath"
+    
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "[SUCCESS] Video processed. Ready to query." -ForegroundColor Green
+        Save-Config
+    } else {
+        Write-Host "[ERROR] Processing failed." -ForegroundColor Red
+    }
 }
 
-function Main {
-    if (-not (Test-Path $global:OutputPath)) {
-        New-Item -ItemType Directory -Path $global:OutputPath -Force | Out-Null
+function Start-Querying {
+    if (-not (Test-Path $analysisJson)) {
+        Write-Host "[ERROR] Video not processed yet. Choose 'D' first." -ForegroundColor Red
+        return
     }
+    
+    if (-not $outputPath) {
+        $outputPath = "$scriptDir\output"
+    }
+    
+    Write-Host ""
+    python "$scriptDir\chat.py" "$analysisJson" "$outputPath"
+}
 
-    while ($true) {
-        Show-Banner
-        Show-Menu
+function Save-Config {
+    $config = @{
+        videoPath = $videoPath
+        outputPath = $outputPath
+    }
+    $config | ConvertTo-Json | Set-Content "$scriptDir\.capture_config"
+}
 
-        $choice = Read-Host "Enter choice (A/C/D/P/E)"
-
-        switch ($choice.ToUpper().Trim()) {
-            "A" {
-                $path = Read-Host "Enter full video file path"
-                $path = $path.Trim().Trim('"')
-                if (Test-Path $path) {
-                    $global:VideoPath = $path
-                    Write-Host "OK Video path set" -ForegroundColor Green
-                } else {
-                    Write-Host "X File not found: $path" -ForegroundColor Red
-                }
-                Read-Host "Press Enter to continue"
-            }
-            "C" {
-                $path = Read-Host "Enter output folder path (Enter = keep default)"
-                if ($path.Trim()) {
-                    $path = $path.Trim().Trim('"')
-                    if (-not (Test-Path $path)) {
-                        New-Item -ItemType Directory -Path $path -Force | Out-Null
-                    }
-                    $global:OutputPath = $path
-                    Write-Host "OK Output folder set" -ForegroundColor Green
-                } else {
-                    Write-Host "OK Keeping default: $global:OutputPath" -ForegroundColor Green
-                }
-                Read-Host "Press Enter to continue"
-            }
-            "D" {
-                if (-not $global:VideoPath) {
-                    Write-Host "X Set video path first (press A)" -ForegroundColor Red
-                } else {
-                    $global:AnalysisData = Run-Process
-                    if ($global:AnalysisData) {
-                        $global:ProcessingComplete = $true
-                    }
-                }
-                Read-Host "Press Enter to continue"
-            }
-            "P" {
-                if (-not $global:ProcessingComplete) {
-                    Write-Host "X Process video first (press D)" -ForegroundColor Red
-                    Read-Host "Press Enter to continue"
-                } else {
-                    Run-Chat
-                }
-            }
-            "E" {
-                Write-Host "Thank you for using CAPTURE!" -ForegroundColor Cyan
-                exit
-            }
-            default {
-                Write-Host "X Invalid choice. Use A, C, D, P or E" -ForegroundColor Red
-                Read-Host "Press Enter to continue"
-            }
+# Main loop
+while ($true) {
+    Show-Banner
+    Show-Menu
+    
+    $choice = Read-Host "Enter choice (A/C/D/P/E)"
+    $choice = $choice.ToUpper()
+    
+    switch ($choice) {
+        "A" { Set-VideoPath }
+        "C" { Set-OutputPath }
+        "D" { Start-Processing }
+        "P" { Start-Querying }
+        "E" { 
+            Write-Host "Exiting CAPTURE. Goodbye!" -ForegroundColor Cyan
+            exit 0
+        }
+        default {
+            Write-Host "[ERROR] Invalid choice. Try again." -ForegroundColor Red
         }
     }
+    
+    Write-Host ""
+    Read-Host "Press Enter to continue"
+    Clear-Host
 }
-
-Main

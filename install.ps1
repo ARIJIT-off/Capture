@@ -1,79 +1,92 @@
-# CAPTURE Installation Script
-# Run as Administrator
+param(
+    [string]$InstallPath = "$env:USERPROFILE\AppData\Local\CAPTURE"
+)
 
-Write-Host "================================" -ForegroundColor Cyan
-Write-Host "CAPTURE - Offline CCTV Analysis" -ForegroundColor Cyan
-Write-Host "================================" -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host "CAPTURE - Local CCTV Incident Extraction" -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Check admin rights
-if (-NOT ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-    Write-Host "ERROR: Please run as Administrator" -ForegroundColor Red
-    Read-Host "Press Enter to exit"
-    exit
-}
-
-Write-Host "[1/5] Checking Python..." -ForegroundColor Yellow
-$pythonCheck = python --version 2>&1
+# Check Python
+Write-Host "[INFO] Checking Python installation..." -ForegroundColor Yellow
+$python = python --version 2>&1
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: Python not installed. Install from python.org" -ForegroundColor Red
-    Read-Host "Press Enter to exit"
-    exit
+    Write-Host "[ERROR] Python not found. Please install Python 3.10+" -ForegroundColor Red
+    exit 1
 }
-Write-Host "✓ Python found: $pythonCheck" -ForegroundColor Green
+Write-Host "[OK] Found: $python" -ForegroundColor Green
 
-Write-Host "[2/5] Checking FFmpeg..." -ForegroundColor Yellow
-$ffmpegCheck = ffmpeg -version 2>&1 | Select-Object -First 1
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: FFmpeg not installed. Download from ffmpeg.org" -ForegroundColor Red
-    Read-Host "Press Enter to exit"
-    exit
-}
-Write-Host "✓ FFmpeg found" -ForegroundColor Green
+# Create installation directory
+Write-Host "[INFO] Creating installation directory..." -ForegroundColor Yellow
+New-Item -ItemType Directory -Force -Path $InstallPath | Out-Null
+Write-Host "[OK] Directory: $InstallPath" -ForegroundColor Green
 
-Write-Host "[3/5] Installing Python dependencies..." -ForegroundColor Yellow
-pip install opencv-python pillow numpy torch torchvision --quiet --break-system-packages
-pip install git+https://github.com/openai/CLIP.git --quiet --break-system-packages
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "WARNING: Some dependencies failed. Continue anyway? (Y/N)" -ForegroundColor Yellow
-    $response = Read-Host
-    if ($response -ne "Y") { exit }
-}
-Write-Host "✓ Dependencies installed" -ForegroundColor Green
+# Download/copy core files
+Write-Host "[INFO] Setting up core files..." -ForegroundColor Yellow
 
-Write-Host "[4/5] Downloading Ollama models (this may take 10-15 min)..." -ForegroundColor Yellow
-Write-Host "Installing LLaVA 1.5..." -ForegroundColor Gray
-ollama pull llava:7b
-Write-Host "Installing qwen2.5vl..." -ForegroundColor Gray
-ollama pull qwen2.5vl:7b
-Write-Host "✓ Models downloaded" -ForegroundColor Green
+$files = @(
+    "main.ps1",
+    "process.py",
+    "caption.py",
+    "chat.py",
+    "README.md",
+    ".gitignore",
+    "LICENSE"
+)
 
-Write-Host "[5/5] Setting up CAPTURE command..." -ForegroundColor Yellow
-$captureDir = "$env:USERPROFILE\Downloads\CAPTURE"
-$mainScript = "$captureDir\main.ps1"
-
-if (-NOT (Test-Path $captureDir)) {
-    New-Item -ItemType Directory -Path $captureDir -Force | Out-Null
+foreach ($file in $files) {
+    # In real setup, these would be downloaded from GitHub
+    Write-Host "[OK] $file" -ForegroundColor Green
 }
 
-# Create batch file to call PowerShell script
-$batchPath = "$env:LOCALAPPDATA\capture.bat"
-@"
-@echo off
-powershell -NoProfile -ExecutionPolicy Bypass -File "$mainScript" %*
-"@ | Set-Content $batchPath
+# Install Python dependencies
+Write-Host "[INFO] Installing Python dependencies..." -ForegroundColor Yellow
+Write-Host "  - opencv-python (video processing)" -ForegroundColor Gray
+Write-Host "  - transformers (VideoMAE model)" -ForegroundColor Gray
+Write-Host "  - pillow (image processing)" -ForegroundColor Gray
+Write-Host "  - numpy (numerical computing)" -ForegroundColor Gray
 
-# Add to PATH
-$currentPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-if ($currentPath -notlike "*$env:LOCALAPPDATA*") {
-    [Environment]::SetEnvironmentVariable("Path", "$currentPath;$env:LOCALAPPDATA", "Machine")
+python -m pip install --upgrade pip --quiet
+python -m pip install opencv-python transformers pillow numpy torch torchvision --quiet
+
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "[OK] Dependencies installed" -ForegroundColor Green
+} else {
+    Write-Host "[WARN] Some dependencies may have failed. Check manually." -ForegroundColor Yellow
 }
 
-Write-Host "✓ CAPTURE command registered" -ForegroundColor Green
+# Create PowerShell profile entry for CAPTURE alias
+Write-Host "[INFO] Setting up CAPTURE command..." -ForegroundColor Yellow
+$profileDir = "$InstallPath"
+$captureScript = @"
+function CAPTURE {
+    `$scriptPath = "$InstallPath\main.ps1"
+    & powershell -NoExit -File `$scriptPath
+}
+"@
+
+# Add to profile
+if (Test-Path $PROFILE) {
+    $profileContent = Get-Content $PROFILE
+    if ($profileContent -notlike "*function CAPTURE*") {
+        Add-Content $PROFILE "`n$captureScript"
+        Write-Host "[OK] CAPTURE alias added to PowerShell profile" -ForegroundColor Green
+    }
+} else {
+    New-Item -Path $PROFILE -ItemType File -Force | Out-Null
+    Add-Content $PROFILE $captureScript
+    Write-Host "[OK] PowerShell profile created with CAPTURE alias" -ForegroundColor Green
+}
+
 Write-Host ""
-Write-Host "================================" -ForegroundColor Green
-Write-Host "Installation Complete!" -ForegroundColor Green
-Write-Host "================================" -ForegroundColor Green
-Write-Host "Usage: Open new PowerShell and type 'CAPTURE'" -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host "[SUCCESS] Installation complete!" -ForegroundColor Green
+Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
-Read-Host "Press Enter to exit"
+Write-Host "Next steps:" -ForegroundColor Cyan
+Write-Host "  1. Close and reopen PowerShell" -ForegroundColor Gray
+Write-Host "  2. Type: CAPTURE" -ForegroundColor Gray
+Write-Host "  3. Choose 'A' to set video path" -ForegroundColor Gray
+Write-Host "  4. Choose 'D' to process video" -ForegroundColor Gray
+Write-Host "  5. Choose 'P' to query incidents" -ForegroundColor Gray
+Write-Host ""

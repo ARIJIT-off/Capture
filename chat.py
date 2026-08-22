@@ -2,146 +2,77 @@ import json
 import sys
 import os
 import subprocess
+from difflib import SequenceMatcher
 
-def load_clip():
-    """Load CLIP model - much faster than LLaVA"""
-    print("[INFO] Loading CLIP model...")
-    try:
-        import torch
-        import clip
-        from PIL import Image
-        device = "cpu"  # Use CPU since no CUDA GPU
-        model, preprocess = clip.load("ViT-B/32", device=device)
-        print("[INFO] CLIP model loaded")
-        return model, preprocess, device
-    except ImportError:
-        print("[WARN] CLIP not installed. Installing now...")
-        subprocess.run([sys.executable, "-m", "pip", "install", "git+https://github.com/openai/CLIP.git", "Pillow", "--quiet"], check=False)
-        try:
-            import torch
-            import clip
-            from PIL import Image
-            device = "cpu"
-            model, preprocess = clip.load("ViT-B/32", device=device)
-            print("[INFO] CLIP model loaded")
-            return model, preprocess, device
-        except Exception as e:
-            print(f"[ERROR] Could not load CLIP: {e}")
-            return None, None, None
-
-def search_with_clip(analysis_data, user_query, model, preprocess, device):
-    """Use CLIP on motion windows - optimized for incident detection"""
-    import torch
-    import clip
-    from PIL import Image
-
-    # Get motion windows (frames with significant movement)
-    motion_windows = analysis_data.get("motion_windows", [])
-    all_frames = analysis_data.get("frames", [])
+def semantic_match_score(query, caption):
+    """Calculate semantic similarity between query and caption"""
+    query_lower = query.lower()
+    caption_lower = caption.lower()
     
-    if not motion_windows:
-        print("[INFO] No motion detected. Searching all frames...")
-        search_frames = all_frames
-    else:
-        print(f"[INFO] Found {len(motion_windows)} motion frames. Searching...")
-        search_frames = motion_windows
+    # Exact keyword matching
+    keywords = query_lower.split()
+    matches = sum(1 for kw in keywords if kw in caption_lower)
+    keyword_score = matches / len(keywords) if keywords else 0
+    
+    # Sequence matching
+    seq_score = SequenceMatcher(None, query_lower, caption_lower).ratio()
+    
+    # Combined score
+    return (keyword_score * 0.6) + (seq_score * 0.4)
 
-    if not search_frames:
+def search_with_captions(analysis_data, user_query):
+    """Search through frame captions for matches"""
+    frames = analysis_data.get("frames", [])
+    motion_windows = analysis_data.get("motion_windows", [])
+    
+    if not frames:
         return []
-
-    print(f"[INFO] Running CLIP search on {len(search_frames)} frames...")
-    print(f"[INFO] Query: '{user_query}'")
-
-    # Encode the text query
-    text = clip.tokenize([user_query]).to(device)
-
+    
+    print(f"[INFO] Searching {len(frames)} frames for: '{user_query}'")
+    
+    # Search motion windows first (where activity is)
+    search_frames = motion_windows if motion_windows else frames
+    
     matches = []
-    batch_size = 32
-
-    for i in range(0, len(search_frames), batch_size):
-        batch = search_frames[i:i+batch_size]
-        images = []
-
-        for frame in batch:
-            thumb_path = frame.get("thumb", "")
-            if thumb_path and os.path.exists(thumb_path):
-                try:
-                    img = preprocess(Image.open(thumb_path)).unsqueeze(0).to(device)
-                    images.append((img, frame))
-                except:
-                    continue
-
-        if not images:
-            continue
-
-        img_tensors = torch.cat([img for img, _ in images])
-
-        with torch.no_grad():
-            image_features = model.encode_image(img_tensors)
-            text_features = model.encode_text(text)
-
-            image_features /= image_features.norm(dim=-1, keepdim=True)
-            text_features /= text_features.norm(dim=-1, keepdim=True)
-
-            # Use direct cosine similarity (0-1) instead of softmax
-            similarity = (image_features @ text_features.T).squeeze(-1)
-
-        for j, (_, frame) in enumerate(images):
-            clip_score = float(similarity[j])
-            motion = frame.get("motion_score", 0)
-            
-            # Boost score based on motion
-            motion_multiplier = 1.0 + (min(motion, 2000) / 2000.0) * 0.5
-            final_score = clip_score * motion_multiplier
-            
-            if final_score > 0.15:
-                matches.append({
-                    "timestamp": frame["timestamp"],
-                    "frame_num": frame["frame_num"],
-                    "score": round(final_score, 3),
-                    "motion_score": motion
-                })
-
-        pct = min(100, ((i + batch_size) / len(search_frames)) * 100)
-        print(f"[INFO] Progress: {pct:.0f}%", end="\r")
-
-    print("")
-
-    # Sort by score descending, preferring earlier frames within motion sequences
-    matches.sort(key=lambda x: (
-        x["motion_score"] > 10000,  # High-motion frames first
-        x["score"],                  # CLIP score second
-        -x["motion_score"],          # Higher motion wins
-        -x["timestamp"]              # Earlier timestamps preferred (action start)
-    ), reverse=True)
-
-    # Deduplicate - merge matches within 2 seconds
+    for frame in search_frames:
+        caption = frame.get("caption", "unknown")
+        score = semantic_match_score(user_query, caption)
+        
+        # Threshold: only include meaningful matches
+        if score > 0.15:
+            matches.append({
+                "timestamp": frame["timestamp"],
+                "frame_num": frame["frame_num"],
+                "score": round(score, 3),
+                "caption": caption,
+                "motion_score": frame.get("motion_score", 0)
+            })
+    
+    # Sort by score descending
+    matches.sort(key=lambda x: (x["score"], x["motion_score"]), reverse=True)
+    
+    # Deduplicate (within 2 seconds)
     deduped = []
     for m in matches:
         if not deduped or abs(m["timestamp"] - deduped[-1]["timestamp"]) > 2:
             deduped.append(m)
-
-    if not matches:
-        print(f"[INFO] No matches found with query '{user_query}'")
-        print(f"[INFO] Try: 'bottle', 'person', 'hand', 'stealing', etc.")
-
+    
     return deduped
 
 def crop_proof(video_path, start_sec, end_sec, output_path, duration):
-    """Use ffmpeg to crop a clip"""
+    """Crop proof clip from video"""
     os.makedirs(output_path, exist_ok=True)
     out_file = os.path.join(output_path, f"proof_{int(start_sec)}s_to_{int(end_sec)}s.mp4")
     end_sec = min(end_sec, duration)
 
-    # Use video codec to ensure output has video stream (not just audio)
     cmd = [
         "ffmpeg",
         "-i", video_path,
         "-ss", str(int(start_sec)),
         "-to", str(int(end_sec)),
-        "-c:v", "libx264",      # Encode video with H.264
-        "-c:a", "aac",          # Encode audio with AAC
-        "-crf", "23",           # Quality (0-51, lower=better, 23=default)
+        "-c:v", "libx264",
+        "-c:a", "aac",
+        "-crf", "23",
         "-y",
         out_file
     ]
@@ -150,7 +81,7 @@ def crop_proof(video_path, start_sec, end_sec, output_path, duration):
         print(f"[OK] Proof saved: {out_file}")
         return out_file
     else:
-        print(f"[ERROR] FFmpeg failed: {result.stderr[-200:]}")
+        print(f"[ERROR] FFmpeg failed")
         return None
 
 def format_time(seconds):
@@ -179,18 +110,11 @@ def main():
     duration = analysis_data.get("duration", 0)
 
     print("=" * 60)
-    print("CAPTURE - Query Interface (CLIP-powered)")
+    print("CAPTURE - Query Interface (Caption-powered)")
     print(f"Video duration  : {format_time(duration)}")
     print(f"Frames indexed  : {analysis_data.get('total_extracted', 0)}")
     print(f"Motion windows  : {analysis_data.get('total_motion_windows', 0)}")
     print("=" * 60)
-
-    # Load CLIP once at startup
-    model, preprocess, device = load_clip()
-    if model is None:
-        print("[ERROR] Could not load CLIP model. Exiting.")
-        sys.exit(1)
-
     print("")
     print("Commands: type query | 'Proof' to download | 'E' to exit")
     print("")
@@ -225,24 +149,27 @@ def main():
                 break
             continue
 
-        # Run CLIP search
-        matches = search_with_clip(analysis_data, user_input, model, preprocess, device)
+        # Search captions
+        matches = search_with_captions(analysis_data, user_input)
         last_matches = matches
 
         print("")
         if matches:
             print(f"[FOUND] {len(matches)} match(es) detected:")
-            for i, m in enumerate(matches[:5]):  # Show top 5
+            for i, m in enumerate(matches[:5]):
                 ts = m["timestamp"]
                 score_pct = int(m["score"] * 100)
-                print(f"  [{i+1}] At {format_time(ts)} ({int(ts)}s) — Confidence: {score_pct}%")
+                caption = m["caption"]
+                print(f"  [{i+1}] At {format_time(ts)} ({int(ts)}s)")
+                print(f"       Caption: '{caption}' | Relevance: {score_pct}%")
+                print()
 
             best = last_matches[0]
             ts = best["timestamp"]
             start = max(0, ts - 3)
             end = min(duration, ts + 7)
-            print(f"\n  Best match: {format_time(ts)}")
-            print(f"  Clip range: {format_time(start)} --> {format_time(end)}")
+            print(f"Best match: {format_time(ts)}")
+            print(f"Clip range: {format_time(start)} --> {format_time(end)}")
             print("")
 
             action = input("Continue (C) or Download proof (Proof)? ").strip().upper()
@@ -254,7 +181,8 @@ def main():
                     print("Goodbye!")
                     break
         else:
-            print("[NOT FOUND] No such incident detected in this video.")
+            print("[NOT FOUND] No matching frames found for your query.")
+            print("[TIP] Try: 'person', 'hand', 'object', 'motion', 'picking up', etc.")
             print("")
 
 if __name__ == "__main__":

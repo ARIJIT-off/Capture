@@ -5,6 +5,11 @@ import subprocess
 
 def load_clip():
     """Load CLIP model - much faster than LLaVA"""
+    print("[INFO] Loading CLIP (torch + torchvision)...")
+    print("[INFO] First load can take 30-90+ seconds on some PCs (antivirus")
+    print("[INFO] scanning new files, slow disk, etc). This is NORMAL.")
+    print("[INFO] Do NOT press Ctrl+C - just let it finish.")
+
     try:
         import torch
         import clip
@@ -13,6 +18,14 @@ def load_clip():
         model, preprocess = clip.load("ViT-B/32", device=device)
         print("[INFO] CLIP model loaded")
         return model, preprocess, device
+    except KeyboardInterrupt:
+        print("")
+        print("[ERROR] Loading was interrupted (Ctrl+C) before it finished.")
+        print("[ERROR] This is why it crashed - torch/clip were mid-import.")
+        print("[TIP] Run CAPTURE again and just wait, even if it looks stuck.")
+        print("[TIP] If it's always slow, add this folder to your antivirus")
+        print("[TIP] exclusions list to speed up future loads.")
+        return None, None, None
     except ImportError:
         print("[WARN] CLIP not installed. Installing now...")
         subprocess.run([sys.executable, "-m", "pip", "install", "git+https://github.com/openai/CLIP.git", "Pillow", "--quiet"], check=False)
@@ -24,6 +37,11 @@ def load_clip():
             model, preprocess = clip.load("ViT-B/32", device=device)
             print("[INFO] CLIP model loaded")
             return model, preprocess, device
+        except KeyboardInterrupt:
+            print("")
+            print("[ERROR] Loading was interrupted (Ctrl+C) before it finished.")
+            print("[TIP] Run CAPTURE again and just wait for it to finish.")
+            return None, None, None
         except Exception as e:
             print(f"[ERROR] Could not load CLIP: {e}")
             return None, None, None

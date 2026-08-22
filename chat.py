@@ -20,7 +20,7 @@ def query_llava(user_query, frame_data):
                 "images": [img_b64],
                 "stream": False
             },
-            timeout=30
+            timeout=120
         )
 
         if response.status_code == 200:

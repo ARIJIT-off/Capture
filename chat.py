@@ -29,25 +29,36 @@ def load_clip():
             return None, None, None
 
 def search_with_clip(analysis_data, user_query, model, preprocess, device):
-    """Use CLIP to semantically match frames to query - very fast"""
+    """Use CLIP on motion windows only - motion-first filtering for accuracy"""
     import torch
     import clip
     from PIL import Image
 
-    frames = analysis_data.get("frames", [])
-    if not frames:
+    # Get motion windows (frames with significant movement)
+    motion_windows = analysis_data.get("motion_windows", [])
+    all_frames = analysis_data.get("frames", [])
+    
+    if not motion_windows:
+        print("[INFO] No motion detected in video. Searching all frames...")
+        search_frames = all_frames
+    else:
+        print(f"[INFO] Found {len(motion_windows)} motion windows. Searching those first...")
+        search_frames = motion_windows
+
+    if not search_frames:
         return []
 
-    print(f"[INFO] Running CLIP semantic search on {len(frames)} frames...")
+    print(f"[INFO] Running CLIP search on {len(search_frames)} high-motion frames...")
+    print(f"[INFO] Query: '{user_query}'")
 
     # Encode the text query
-    text = clip.tokenize([user_query, f"no {user_query}", "empty room", "normal activity"]).to(device)
+    text = clip.tokenize([user_query]).to(device)
 
     matches = []
-    batch_size = 32  # Process in batches for speed
+    batch_size = 32
 
-    for i in range(0, len(frames), batch_size):
-        batch = frames[i:i+batch_size]
+    for i in range(0, len(search_frames), batch_size):
+        batch = search_frames[i:i+batch_size]
         images = []
 
         for frame in batch:
@@ -62,7 +73,6 @@ def search_with_clip(analysis_data, user_query, model, preprocess, device):
         if not images:
             continue
 
-        # Stack batch
         img_tensors = torch.cat([img for img, _ in images])
 
         with torch.no_grad():
@@ -75,9 +85,8 @@ def search_with_clip(analysis_data, user_query, model, preprocess, device):
             similarity = (100.0 * image_features @ text_features.T).softmax(dim=-1)
 
         for j, (_, frame) in enumerate(images):
-            # similarity[:,0] = match score for user_query
             match_score = float(similarity[j][0])
-            if match_score > 0.20:  # Lowered threshold
+            if match_score > 0.18:  # Slightly lower threshold for motion frames
                 matches.append({
                     "timestamp": frame["timestamp"],
                     "frame_num": frame["frame_num"],
@@ -85,19 +94,23 @@ def search_with_clip(analysis_data, user_query, model, preprocess, device):
                     "motion_score": frame.get("motion_score", 0)
                 })
 
-        pct = min(100, ((i + batch_size) / len(frames)) * 100)
-        print(f"[INFO] CLIP search progress: {pct:.0f}%", end="\r")
+        pct = min(100, ((i + batch_size) / len(search_frames)) * 100)
+        print(f"[INFO] Progress: {pct:.0f}%", end="\r")
 
     print("")
 
     # Sort by score descending
     matches.sort(key=lambda x: x["score"], reverse=True)
 
-    # Deduplicate - merge matches within 5 seconds of each other
+    # Deduplicate - merge matches within 2 seconds
     deduped = []
     for m in matches:
-        if not deduped or abs(m["timestamp"] - deduped[-1]["timestamp"]) > 5:
+        if not deduped or abs(m["timestamp"] - deduped[-1]["timestamp"]) > 2:
             deduped.append(m)
+
+    if not matches:
+        print(f"[INFO] No matches found in motion windows with query '{user_query}'")
+        print(f"[INFO] Try: 'bottle', 'person', 'hand', or 'object'")
 
     return deduped
 

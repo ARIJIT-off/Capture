@@ -82,11 +82,16 @@ def search_with_clip(analysis_data, user_query, model, preprocess, device):
             image_features /= image_features.norm(dim=-1, keepdim=True)
             text_features /= text_features.norm(dim=-1, keepdim=True)
 
-            similarity = (100.0 * image_features @ text_features.T).softmax(dim=-1)
+            # Use direct cosine similarity (0-1) instead of softmax
+            # softmax normalizes across frames making them all equal
+            similarity = (image_features @ text_features.T).squeeze(-1)  # Shape: [batch_size]
 
         for j, (_, frame) in enumerate(images):
-            match_score = float(similarity[j][0])
-            if match_score > 0.18:  # Slightly lower threshold for motion frames
+            # Direct cosine similarity (0-1 range, already normalized)
+            match_score = float(similarity[j])
+            
+            # Scale to percentage for display
+            if match_score > 0.15:
                 matches.append({
                     "timestamp": frame["timestamp"],
                     "frame_num": frame["frame_num"],

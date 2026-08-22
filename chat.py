@@ -110,7 +110,7 @@ def search_with_clip(analysis_data, user_query, model, preprocess, device):
             
             # Only include if avg score is high (not just one lucky high match)
             # This filters out false positives
-            if avg_score > 0.28 and max_score > 0.40:
+            if avg_score > 0.20 and max_score > 0.30:
                 matches.append({
                     "timestamp": frame["timestamp"],
                     "frame_num": frame["frame_num"],

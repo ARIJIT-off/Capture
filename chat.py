@@ -38,11 +38,17 @@ def search_with_clip(analysis_data, user_query, model, preprocess, device):
     motion_windows = analysis_data.get("motion_windows", [])
     all_frames = analysis_data.get("frames", [])
     
+    # Filter out frame 0 (MOG2 false positive on first frame) and extreme outliers
+    motion_windows = [
+        f for f in motion_windows 
+        if f["frame_num"] > 0 and f.get("motion_score", 0) < 100000
+    ]
+    
     if not motion_windows:
-        print("[INFO] No motion detected in video. Searching all frames...")
-        search_frames = all_frames
+        print("[INFO] No valid motion detected. Searching all frames...")
+        search_frames = [f for f in all_frames if f["frame_num"] > 0]
     else:
-        print(f"[INFO] Found {len(motion_windows)} motion windows. Searching those first...")
+        print(f"[INFO] Found {len(motion_windows)} motion windows (filtered). Searching those first...")
         search_frames = motion_windows
 
     if not search_frames:

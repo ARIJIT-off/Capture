@@ -5,11 +5,6 @@ import subprocess
 
 def load_clip():
     """Load CLIP model - much faster than LLaVA"""
-    print("[INFO] Loading CLIP (torch + torchvision)...")
-    print("[INFO] First load can take 30-90+ seconds on some PCs (antivirus")
-    print("[INFO] scanning new files, slow disk, etc). This is NORMAL.")
-    print("[INFO] Do NOT press Ctrl+C - just let it finish.")
-
     try:
         import torch
         import clip
@@ -18,14 +13,6 @@ def load_clip():
         model, preprocess = clip.load("ViT-B/32", device=device)
         print("[INFO] CLIP model loaded")
         return model, preprocess, device
-    except KeyboardInterrupt:
-        print("")
-        print("[ERROR] Loading was interrupted (Ctrl+C) before it finished.")
-        print("[ERROR] This is why it crashed - torch/clip were mid-import.")
-        print("[TIP] Run CAPTURE again and just wait, even if it looks stuck.")
-        print("[TIP] If it's always slow, add this folder to your antivirus")
-        print("[TIP] exclusions list to speed up future loads.")
-        return None, None, None
     except ImportError:
         print("[WARN] CLIP not installed. Installing now...")
         subprocess.run([sys.executable, "-m", "pip", "install", "git+https://github.com/openai/CLIP.git", "Pillow", "--quiet"], check=False)
@@ -37,17 +24,12 @@ def load_clip():
             model, preprocess = clip.load("ViT-B/32", device=device)
             print("[INFO] CLIP model loaded")
             return model, preprocess, device
-        except KeyboardInterrupt:
-            print("")
-            print("[ERROR] Loading was interrupted (Ctrl+C) before it finished.")
-            print("[TIP] Run CAPTURE again and just wait for it to finish.")
-            return None, None, None
         except Exception as e:
             print(f"[ERROR] Could not load CLIP: {e}")
             return None, None, None
 
 def search_with_clip(analysis_data, user_query, model, preprocess, device):
-    """Use CLIP to semantically match frames to query - multi-query refinement for precision"""
+    """Use CLIP to semantically match frames to query - very fast"""
     import torch
     import clip
     from PIL import Image
@@ -57,23 +39,12 @@ def search_with_clip(analysis_data, user_query, model, preprocess, device):
         return []
 
     print(f"[INFO] Running CLIP semantic search on {len(frames)} frames...")
-    print(f"[INFO] Query: '{user_query}' (using multi-query refinement)")
 
-    # Multi-query strategy: ask related questions to narrow down exact moment
-    related_queries = [
-        user_query,
-        f"someone {user_query.lower()}",
-        f"person {user_query.lower()}",
-        f"hand reaching for {user_query.lower()}",
-        f"taking {user_query.lower()}",
-    ]
-    
-    # Remove duplicates and tokenize
-    related_queries = list(set(related_queries))
-    text = clip.tokenize(related_queries).to(device)
+    # Encode the text query
+    text = clip.tokenize([user_query, f"no {user_query}", "empty room", "normal activity"]).to(device)
 
     matches = []
-    batch_size = 32
+    batch_size = 32  # Process in batches for speed
 
     for i in range(0, len(frames), batch_size):
         batch = frames[i:i+batch_size]
@@ -91,6 +62,7 @@ def search_with_clip(analysis_data, user_query, model, preprocess, device):
         if not images:
             continue
 
+        # Stack batch
         img_tensors = torch.cat([img for img, _ in images])
 
         with torch.no_grad():
@@ -103,19 +75,13 @@ def search_with_clip(analysis_data, user_query, model, preprocess, device):
             similarity = (100.0 * image_features @ text_features.T).softmax(dim=-1)
 
         for j, (_, frame) in enumerate(images):
-            # Score: average of all related queries (higher = more specific match)
-            scores = [float(similarity[j][k]) for k in range(len(related_queries))]
-            avg_score = sum(scores) / len(scores)
-            max_score = max(scores)
-            
-            # Only include if avg score is high (not just one lucky high match)
-            # This filters out false positives
-            if avg_score > 0.20 and max_score > 0.30:
+            # similarity[:,0] = match score for user_query
+            match_score = float(similarity[j][0])
+            if match_score > 0.20:  # Lowered threshold
                 matches.append({
                     "timestamp": frame["timestamp"],
                     "frame_num": frame["frame_num"],
-                    "score": round(avg_score, 3),
-                    "max_score": round(max_score, 3),
+                    "score": round(match_score, 3),
                     "motion_score": frame.get("motion_score", 0)
                 })
 
@@ -127,10 +93,10 @@ def search_with_clip(analysis_data, user_query, model, preprocess, device):
     # Sort by score descending
     matches.sort(key=lambda x: x["score"], reverse=True)
 
-    # Deduplicate - merge matches within 3 seconds of each other (stricter)
+    # Deduplicate - merge matches within 5 seconds of each other
     deduped = []
     for m in matches:
-        if not deduped or abs(m["timestamp"] - deduped[-1]["timestamp"]) > 3:
+        if not deduped or abs(m["timestamp"] - deduped[-1]["timestamp"]) > 5:
             deduped.append(m)
 
     return deduped
@@ -240,8 +206,7 @@ def main():
             for i, m in enumerate(matches[:5]):  # Show top 5
                 ts = m["timestamp"]
                 score_pct = int(m["score"] * 100)
-                max_pct = int(m.get("max_score", 0) * 100)
-                print(f"  [{i+1}] At {format_time(ts)} ({int(ts)}s) — Avg: {score_pct}% | Peak: {max_pct}%")
+                print(f"  [{i+1}] At {format_time(ts)} ({int(ts)}s) — Confidence: {score_pct}%")
 
             best = last_matches[0]
             ts = best["timestamp"]

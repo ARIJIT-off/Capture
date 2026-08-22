@@ -2,74 +2,110 @@ import json
 import sys
 import os
 import subprocess
-import requests
-import base64
-import cv2
 
-def query_llava(user_query, frame_data):
-    """Send a frame to LLaVA via Ollama and ask about the query"""
+def load_clip():
+    """Load CLIP model - much faster than LLaVA"""
     try:
-        _, buffer = cv2.imencode(".jpg", frame_data)
-        img_b64 = base64.b64encode(buffer).decode("utf-8")
+        import torch
+        import clip
+        from PIL import Image
+        device = "cpu"  # Use CPU since no CUDA GPU
+        model, preprocess = clip.load("ViT-B/32", device=device)
+        print("[INFO] CLIP model loaded")
+        return model, preprocess, device
+    except ImportError:
+        print("[WARN] CLIP not installed. Installing now...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "git+https://github.com/openai/CLIP.git", "Pillow", "--quiet"], check=False)
+        try:
+            import torch
+            import clip
+            from PIL import Image
+            device = "cpu"
+            model, preprocess = clip.load("ViT-B/32", device=device)
+            print("[INFO] CLIP model loaded")
+            return model, preprocess, device
+        except Exception as e:
+            print(f"[ERROR] Could not load CLIP: {e}")
+            return None, None, None
 
-        response = requests.post(
-            "http://localhost:11434/api/generate",
-            json={
-                "model": "llava:7b",
-                "prompt": f"Look at this image carefully. Does it show: {user_query}? Reply with YES or NO, then briefly explain what you see.",
-                "images": [img_b64],
-                "stream": False
-            },
-            timeout=120
-        )
+def search_with_clip(analysis_data, user_query, model, preprocess, device):
+    """Use CLIP to semantically match frames to query - very fast"""
+    import torch
+    import clip
+    from PIL import Image
 
-        if response.status_code == 200:
-            return response.json().get("response", "")
-    except Exception as e:
-        print(f"[WARN] LLaVA query failed: {e}")
-    return ""
-
-def search_video(analysis_data, user_query, video_path):
-    """Search motion windows using LLaVA"""
-    motion_windows = analysis_data.get("motion_windows", [])
-
-    if not motion_windows:
+    frames = analysis_data.get("frames", [])
+    if not frames:
         return []
 
-    print(f"[INFO] Checking {len(motion_windows)} motion windows...")
+    print(f"[INFO] Running CLIP semantic search on {len(frames)} frames...")
 
-    cap = cv2.VideoCapture(video_path)
-    fps = analysis_data.get("fps", 30)
+    # Encode the text query
+    text = clip.tokenize([user_query, f"no {user_query}", "empty room", "normal activity"]).to(device)
+
     matches = []
+    batch_size = 32  # Process in batches for speed
 
-    for i, window in enumerate(motion_windows):
-        timestamp = window["timestamp"]
-        frame_num = window["frame_num"]
+    for i in range(0, len(frames), batch_size):
+        batch = frames[i:i+batch_size]
+        images = []
 
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
-        ret, frame = cap.read()
+        for frame in batch:
+            thumb_path = frame.get("thumb", "")
+            if thumb_path and os.path.exists(thumb_path):
+                try:
+                    img = preprocess(Image.open(thumb_path)).unsqueeze(0).to(device)
+                    images.append((img, frame))
+                except:
+                    continue
 
-        if not ret:
+        if not images:
             continue
 
-        print(f"[INFO] Checking frame at {int(timestamp)}s... ({i+1}/{len(motion_windows)})")
-        result = query_llava(user_query, frame)
+        # Stack batch
+        img_tensors = torch.cat([img for img, _ in images])
 
-        if result and "YES" in result.upper():
-            matches.append({
-                "timestamp": timestamp,
-                "frame_num": frame_num,
-                "response": result
-            })
-            print(f"[MATCH] Found at {int(timestamp//60)}m {int(timestamp%60)}s")
+        with torch.no_grad():
+            image_features = model.encode_image(img_tensors)
+            text_features = model.encode_text(text)
 
-    cap.release()
-    return matches
+            image_features /= image_features.norm(dim=-1, keepdim=True)
+            text_features /= text_features.norm(dim=-1, keepdim=True)
 
-def crop_proof(video_path, start_sec, end_sec, output_path):
+            similarity = (100.0 * image_features @ text_features.T).softmax(dim=-1)
+
+        for j, (_, frame) in enumerate(images):
+            # similarity[:,0] = match score for user_query
+            match_score = float(similarity[j][0])
+            if match_score > 0.35:  # Threshold
+                matches.append({
+                    "timestamp": frame["timestamp"],
+                    "frame_num": frame["frame_num"],
+                    "score": round(match_score, 3),
+                    "motion_score": frame.get("motion_score", 0)
+                })
+
+        pct = min(100, ((i + batch_size) / len(frames)) * 100)
+        print(f"[INFO] CLIP search progress: {pct:.0f}%", end="\r")
+
+    print("")
+
+    # Sort by score descending
+    matches.sort(key=lambda x: x["score"], reverse=True)
+
+    # Deduplicate - merge matches within 5 seconds of each other
+    deduped = []
+    for m in matches:
+        if not deduped or abs(m["timestamp"] - deduped[-1]["timestamp"]) > 5:
+            deduped.append(m)
+
+    return deduped
+
+def crop_proof(video_path, start_sec, end_sec, output_path, duration):
     """Use ffmpeg to crop a clip"""
     os.makedirs(output_path, exist_ok=True)
     out_file = os.path.join(output_path, f"proof_{int(start_sec)}s_to_{int(end_sec)}s.mp4")
+    end_sec = min(end_sec, duration)
 
     cmd = [
         "ffmpeg",
@@ -80,13 +116,12 @@ def crop_proof(video_path, start_sec, end_sec, output_path):
         "-y",
         out_file
     ]
-
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode == 0:
         print(f"[OK] Proof saved: {out_file}")
         return out_file
     else:
-        print(f"[ERROR] FFmpeg failed: {result.stderr}")
+        print(f"[ERROR] FFmpeg failed: {result.stderr[-200:]}")
         return None
 
 def format_time(seconds):
@@ -105,7 +140,7 @@ def main():
     output_path = sys.argv[2]
 
     if not os.path.exists(json_path):
-        print(f"[ERROR] analysis.json not found: {json_path}")
+        print(f"[ERROR] analysis.json not found")
         sys.exit(1)
 
     with open(json_path, "r") as f:
@@ -115,11 +150,20 @@ def main():
     duration = analysis_data.get("duration", 0)
 
     print("=" * 60)
-    print("CAPTURE - Query Interface")
-    print(f"Video duration: {format_time(duration)}")
-    print(f"Motion windows: {analysis_data.get('total_motion_windows', 0)}")
+    print("CAPTURE - Query Interface (CLIP-powered)")
+    print(f"Video duration  : {format_time(duration)}")
+    print(f"Frames indexed  : {analysis_data.get('total_extracted', 0)}")
+    print(f"Motion windows  : {analysis_data.get('total_motion_windows', 0)}")
     print("=" * 60)
-    print("Commands: Type query | 'E' to exit | 'Proof' to download clip")
+
+    # Load CLIP once at startup
+    model, preprocess, device = load_clip()
+    if model is None:
+        print("[ERROR] Could not load CLIP model. Exiting.")
+        sys.exit(1)
+
+    print("")
+    print("Commands: type query | 'Proof' to download | 'E' to exit")
     print("")
 
     last_matches = []
@@ -136,53 +180,52 @@ def main():
 
         if user_input.upper() == "PROOF":
             if not last_matches:
-                print("[INFO] No match to download. Run a query first.")
+                print("[INFO] No match yet. Run a query first.")
                 continue
 
             best = last_matches[0]
             ts = best["timestamp"]
             start = max(0, ts - 3)
             end = min(duration, ts + 7)
+            print(f"[INFO] Cropping {format_time(start)} --> {format_time(end)}...")
+            crop_proof(video_path, start, end, output_path, duration)
 
-            print(f"[INFO] Cropping from {format_time(start)} to {format_time(end)}...")
-            crop_proof(video_path, start, end, output_path)
-
-            cont = input("Continue chatting? (P=yes / E=exit): ").strip().upper()
+            cont = input("Continue chatting? (C=yes / E=exit): ").strip().upper()
             if cont == "E":
-                print("Exiting CAPTURE. Goodbye!")
+                print("Goodbye!")
                 break
             continue
 
-        # Run query
-        matches = search_video(analysis_data, user_input, video_path)
+        # Run CLIP search
+        matches = search_with_clip(analysis_data, user_input, model, preprocess, device)
         last_matches = matches
 
         print("")
         if matches:
-            print(f"[FOUND] Incident detected in {len(matches)} location(s):")
-            for m in matches:
+            print(f"[FOUND] {len(matches)} match(es) detected:")
+            for i, m in enumerate(matches[:5]):  # Show top 5
                 ts = m["timestamp"]
-                print(f"  >> At {format_time(ts)} ({int(ts)}s)")
-                print(f"     {m['response'][:120]}")
+                score_pct = int(m["score"] * 100)
+                print(f"  [{i+1}] At {format_time(ts)} ({int(ts)}s) — Confidence: {score_pct}%")
 
-            best = matches[0]
+            best = last_matches[0]
             ts = best["timestamp"]
             start = max(0, ts - 3)
             end = min(duration, ts + 7)
-            print(f"\n[INFO] Incident window: {format_time(start)} --> {format_time(end)}")
+            print(f"\n  Best match: {format_time(ts)}")
+            print(f"  Clip range: {format_time(start)} --> {format_time(end)}")
             print("")
 
-            action = input("Continue chat (C) or Download proof (Proof)? ").strip().upper()
+            action = input("Continue (C) or Download proof (Proof)? ").strip().upper()
             if action == "PROOF":
-                print(f"[INFO] Cropping from {format_time(start)} to {format_time(end)}...")
-                crop_proof(video_path, start, end, output_path)
-
-                cont = input("Continue chatting? (P=yes / E=exit): ").strip().upper()
+                print(f"[INFO] Cropping...")
+                crop_proof(video_path, start, end, output_path, duration)
+                cont = input("Continue chatting? (C=yes / E=exit): ").strip().upper()
                 if cont == "E":
-                    print("Exiting CAPTURE. Goodbye!")
+                    print("Goodbye!")
                     break
         else:
-            print("[NOT FOUND] No such incident found in this video.")
+            print("[NOT FOUND] No such incident detected in this video.")
             print("")
 
 if __name__ == "__main__":

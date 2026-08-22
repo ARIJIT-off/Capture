@@ -32,7 +32,8 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "✓ FFmpeg found" -ForegroundColor Green
 
 Write-Host "[3/5] Installing Python dependencies..." -ForegroundColor Yellow
-pip install opencv-python ollama pillow numpy --quiet --break-system-packages
+pip install opencv-python pillow numpy torch torchvision --quiet --break-system-packages
+pip install git+https://github.com/openai/CLIP.git --quiet --break-system-packages
 if ($LASTEXITCODE -ne 0) {
     Write-Host "WARNING: Some dependencies failed. Continue anyway? (Y/N)" -ForegroundColor Yellow
     $response = Read-Host

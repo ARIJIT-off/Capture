@@ -2,6 +2,7 @@ import cv2
 import json
 import sys
 import os
+import numpy as np
 
 def process_video(video_path):
     try:
@@ -16,14 +17,14 @@ def process_video(video_path):
 
         print(f"[INFO] Duration : {duration:.1f} seconds")
         print(f"[INFO] FPS      : {fps}")
-        print(f"[INFO] Frames   : {total_frames}")
-        print(f"[INFO] Extracting 1 frame every 2 seconds...")
+        print(f"[INFO] Extracting frames + detecting motion...")
 
         frames = []
         frame_count = 0
-        fgbg = cv2.createBackgroundSubtractorMOG2()
+        fgbg = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=50)
         frame_interval = max(1, int(fps * 2))
         extracted = 0
+        prev_frame = None
 
         while True:
             ret, frame = cap.read()
@@ -32,24 +33,54 @@ def process_video(video_path):
 
             if frame_count % frame_interval == 0:
                 timestamp = frame_count / fps
+
+                # Motion via MOG2
                 fgmask = fgbg.apply(frame)
-                motion_pixels = cv2.countNonZero(fgmask)
+                motion_score = int(cv2.countNonZero(fgmask))
+
+                # Optical flow score vs previous frame
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                flow_score = 0
+                if prev_frame is not None:
+                    diff = cv2.absdiff(prev_frame, gray)
+                    flow_score = int(np.sum(diff > 25))
+                prev_frame = gray
+
+                # Save thumbnail (small, for fast CLIP later)
+                thumb = cv2.resize(frame, (224, 224))
+                thumb_path = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    "frames",
+                    f"frame_{frame_count:08d}.jpg"
+                )
+                os.makedirs(os.path.dirname(thumb_path), exist_ok=True)
+                cv2.imwrite(thumb_path, thumb, [cv2.IMWRITE_JPEG_QUALITY, 70])
 
                 frames.append({
                     "frame_num": frame_count,
                     "timestamp": round(timestamp, 2),
-                    "motion_score": int(motion_pixels)
+                    "motion_score": motion_score,
+                    "flow_score": flow_score,
+                    "thumb": thumb_path
                 })
                 extracted += 1
 
                 if extracted % 50 == 0:
-                    print(f"[INFO] Extracted {extracted} frames so far...")
+                    pct = (frame_count / total_frames) * 100
+                    print(f"[INFO] Progress: {pct:.0f}% ({extracted} frames extracted)")
 
             frame_count += 1
 
         cap.release()
 
-        motion_windows = [f for f in frames if f["motion_score"] > 200]
+        # Motion windows = frames with significant movement
+        motion_windows = [
+            f for f in frames
+            if f["motion_score"] > 300 or f["flow_score"] > 500
+        ]
+
+        # Sort by combined score
+        motion_windows.sort(key=lambda x: x["motion_score"] + x["flow_score"], reverse=True)
 
         analysis = {
             "video_path": video_path,
@@ -61,14 +92,15 @@ def process_video(video_path):
             "motion_windows": motion_windows
         }
 
-        print(f"[INFO] Total extracted frames : {len(frames)}")
-        print(f"[INFO] Motion windows found   : {len(motion_windows)}")
-        print(f"[SUCCESS] Analysis complete")
-
+        print(f"[INFO] Frames extracted     : {len(frames)}")
+        print(f"[INFO] Motion windows found : {len(motion_windows)}")
+        print(f"[SUCCESS] Processing complete")
         return analysis
 
     except Exception as e:
         print(f"[ERROR] {str(e)}")
+        import traceback
+        traceback.print_exc()
         return None
 
 if __name__ == "__main__":
@@ -77,19 +109,16 @@ if __name__ == "__main__":
         sys.exit(1)
 
     video_path = sys.argv[1]
-
     if not os.path.exists(video_path):
         print(f"[ERROR] File not found: {video_path}")
         sys.exit(1)
 
     analysis = process_video(video_path)
-
     if analysis:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        out_path = os.path.join(script_dir, "analysis.json")
-        with open(out_path, "w") as f:
+        out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analysis.json")
+        with open(out, "w") as f:
             json.dump(analysis, f, indent=2)
-        print(f"[INFO] Saved: {out_path}")
+        print(f"[INFO] Saved: {out}")
         sys.exit(0)
     else:
         sys.exit(1)

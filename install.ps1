@@ -42,9 +42,9 @@ Write-Host "✓ Dependencies installed" -ForegroundColor Green
 
 Write-Host "[4/5] Downloading Ollama models (this may take 10-15 min)..." -ForegroundColor Yellow
 Write-Host "Installing LLaVA 1.5..." -ForegroundColor Gray
-ollama pull llava:7b 2>&1 | Out-Null
+ollama pull llava:7b
 Write-Host "Installing qwen2.5vl..." -ForegroundColor Gray
-ollama pull qwen2.5vl:7b 2>&1 | Out-Null
+ollama pull qwen2.5vl:7b
 Write-Host "✓ Models downloaded" -ForegroundColor Green
 
 Write-Host "[5/5] Setting up CAPTURE command..." -ForegroundColor Yellow

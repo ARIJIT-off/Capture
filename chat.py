@@ -9,15 +9,12 @@ def semantic_match_score(query, caption):
     query_lower = query.lower()
     caption_lower = caption.lower()
     
-    # Exact keyword matching
     keywords = query_lower.split()
     matches = sum(1 for kw in keywords if kw in caption_lower)
     keyword_score = matches / len(keywords) if keywords else 0
     
-    # Sequence matching
     seq_score = SequenceMatcher(None, query_lower, caption_lower).ratio()
     
-    # Combined score
     return (keyword_score * 0.6) + (seq_score * 0.4)
 
 def search_with_captions(analysis_data, user_query):
@@ -30,7 +27,6 @@ def search_with_captions(analysis_data, user_query):
     
     print(f"[INFO] Searching {len(frames)} frames for: '{user_query}'")
     
-    # Search motion windows first (where activity is)
     search_frames = motion_windows if motion_windows else frames
     
     matches = []
@@ -38,7 +34,6 @@ def search_with_captions(analysis_data, user_query):
         caption = frame.get("caption", "unknown")
         score = semantic_match_score(user_query, caption)
         
-        # Threshold: only include meaningful matches
         if score > 0.15:
             matches.append({
                 "timestamp": frame["timestamp"],
@@ -48,10 +43,8 @@ def search_with_captions(analysis_data, user_query):
                 "motion_score": frame.get("motion_score", 0)
             })
     
-    # Sort by score descending
     matches.sort(key=lambda x: (x["score"], x["motion_score"]), reverse=True)
     
-    # Deduplicate (within 2 seconds)
     deduped = []
     for m in matches:
         if not deduped or abs(m["timestamp"] - deduped[-1]["timestamp"]) > 2:
@@ -149,7 +142,6 @@ def main():
                 break
             continue
 
-        # Search captions
         matches = search_with_captions(analysis_data, user_input)
         last_matches = matches
 
@@ -161,7 +153,7 @@ def main():
                 score_pct = int(m["score"] * 100)
                 caption = m["caption"]
                 print(f"  [{i+1}] At {format_time(ts)} ({int(ts)}s)")
-                print(f"       Caption: '{caption}' | Relevance: {score_pct}%")
+                print(f"       Caption: '{caption}' | Match: {score_pct}%")
                 print()
 
             best = last_matches[0]
@@ -182,7 +174,7 @@ def main():
                     break
         else:
             print("[NOT FOUND] No matching frames found for your query.")
-            print("[TIP] Try: 'person', 'hand', 'object', 'motion', 'picking up', etc.")
+            print("[TIP] Try: 'person', 'hand', 'picking up', 'girl', etc.")
             print("")
 
 if __name__ == "__main__":

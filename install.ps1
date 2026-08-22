@@ -21,67 +21,79 @@ Write-Host "[INFO] Creating installation directory..." -ForegroundColor Yellow
 New-Item -ItemType Directory -Force -Path $InstallPath | Out-Null
 Write-Host "[OK] Directory: $InstallPath" -ForegroundColor Green
 
-# Download/copy core files
-Write-Host "[INFO] Setting up core files..." -ForegroundColor Yellow
+# Enable TLS for downloads
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
+# Download core files
+Write-Host "[INFO] Downloading core files from GitHub..." -ForegroundColor Yellow
 
 $githubRaw = "https://raw.githubusercontent.com/ARIJIT-off/Capture/main"
-$files = @(
-    "main.ps1",
-    "process.py",
-    "chat.py",
-    "README.md",
-    ".gitignore",
-    "LICENSE"
-)
+$files = @{
+    "main.ps1" = "main.ps1"
+    "process.py" = "process.py"
+    "chat.py" = "chat.py"
+    "README.md" = "README.md"
+    ".gitignore" = ".gitignore"
+    "LICENSE" = "LICENSE"
+}
 
-foreach ($file in $files) {
+$downloadedCount = 0
+foreach ($file in $files.Keys) {
     try {
-        $url = "$githubRaw/$file"
+        $url = "$githubRaw/$($files[$file])"
         $outFile = "$InstallPath\$file"
-        Invoke-WebRequest -Uri $url -OutFile $outFile -ErrorAction Stop
-        Write-Host "[OK] Downloaded $file" -ForegroundColor Green
+        
+        Write-Host "  Downloading $file..." -ForegroundColor Gray
+        Invoke-WebRequest -Uri $url -OutFile $outFile -UseBasicParsing -ErrorAction Stop
+        Write-Host "  [OK] $file" -ForegroundColor Green
+        $downloadedCount++
     } catch {
-        Write-Host "[WARN] Could not download $file - $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "  [ERROR] Failed to download $file" -ForegroundColor Red
     }
 }
+
+if ($downloadedCount -lt 4) {
+    Write-Host ""
+    Write-Host "[ERROR] Failed to download required files" -ForegroundColor Red
+    Write-Host "[TIP] Check your internet connection and try again" -ForegroundColor Yellow
+    exit 1
+}
+
+Write-Host "[OK] All files downloaded" -ForegroundColor Green
 
 # Install Python dependencies
 Write-Host "[INFO] Installing Python dependencies..." -ForegroundColor Yellow
-Write-Host "  - opencv-python (video processing)" -ForegroundColor Gray
-Write-Host "  - transformers (VideoMAE model)" -ForegroundColor Gray
-Write-Host "  - pillow (image processing)" -ForegroundColor Gray
-Write-Host "  - numpy (numerical computing)" -ForegroundColor Gray
+Write-Host "  This may take 2-5 minutes..." -ForegroundColor Gray
 
-python -m pip install --upgrade pip --quiet
-python -m pip install opencv-python transformers pillow numpy torch torchvision --quiet
+python -m pip install --upgrade pip 2>&1 | Out-Null
+python -m pip install opencv-python transformers pillow numpy torch torchvision 2>&1 | Out-Null
 
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "[OK] Dependencies installed" -ForegroundColor Green
-} else {
-    Write-Host "[WARN] Some dependencies may have failed. Check manually." -ForegroundColor Yellow
-}
+Write-Host "[OK] Dependencies installed" -ForegroundColor Green
 
-# Create PowerShell profile entry for CAPTURE alias
+# Create PowerShell profile entry
 Write-Host "[INFO] Setting up CAPTURE command..." -ForegroundColor Yellow
-$profileDir = "$InstallPath"
+
 $captureScript = @"
 function CAPTURE {
     `$scriptPath = "$InstallPath\main.ps1"
-    & powershell -NoExit -File `$scriptPath
+    if (Test-Path `$scriptPath) {
+        & powershell -NoExit -File `$scriptPath
+    } else {
+        Write-Host "[ERROR] CAPTURE files not found" -ForegroundColor Red
+    }
 }
 "@
 
-# Add to profile
 if (Test-Path $PROFILE) {
-    $profileContent = Get-Content $PROFILE
+    $profileContent = Get-Content $PROFILE -Raw
     if ($profileContent -notlike "*function CAPTURE*") {
-        Add-Content $PROFILE "`n$captureScript"
-        Write-Host "[OK] CAPTURE alias added to PowerShell profile" -ForegroundColor Green
+        "`n$captureScript" | Add-Content $PROFILE
+        Write-Host "[OK] CAPTURE alias added to profile" -ForegroundColor Green
     }
 } else {
     New-Item -Path $PROFILE -ItemType File -Force | Out-Null
-    Add-Content $PROFILE $captureScript
-    Write-Host "[OK] PowerShell profile created with CAPTURE alias" -ForegroundColor Green
+    Set-Content $PROFILE $captureScript
+    Write-Host "[OK] PowerShell profile created" -ForegroundColor Green
 }
 
 Write-Host ""
@@ -90,9 +102,7 @@ Write-Host "[SUCCESS] Installation complete!" -ForegroundColor Green
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
-Write-Host "  1. Close and reopen PowerShell" -ForegroundColor Gray
-Write-Host "  2. Type: CAPTURE" -ForegroundColor Gray
-Write-Host "  3. Choose 'A' to set video path" -ForegroundColor Gray
-Write-Host "  4. Choose 'D' to process video" -ForegroundColor Gray
-Write-Host "  5. Choose 'P' to query incidents" -ForegroundColor Gray
+Write-Host "  1. Close PowerShell completely" -ForegroundColor White
+Write-Host "  2. Open a NEW PowerShell window" -ForegroundColor White
+Write-Host "  3. Type: CAPTURE" -ForegroundColor White
 Write-Host ""

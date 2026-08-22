@@ -116,8 +116,12 @@ def search_with_clip(analysis_data, user_query, model, preprocess, device):
 
     print("")
 
-    # Sort by score descending
-    matches.sort(key=lambda x: x["score"], reverse=True)
+    # Sort by score descending, with motion as tiebreaker
+    matches.sort(key=lambda x: (
+        x["motion_score"] > 10000,  # Primary: high-motion frames first
+        x["score"],                  # Secondary: CLIP score
+        -x["motion_score"]           # Tertiary: higher motion wins ties
+    ), reverse=True)
 
     # Deduplicate - merge matches within 2 seconds
     deduped = []

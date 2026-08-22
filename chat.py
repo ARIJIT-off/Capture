@@ -88,15 +88,21 @@ def search_with_clip(analysis_data, user_query, model, preprocess, device):
 
         for j, (_, frame) in enumerate(images):
             # Direct cosine similarity (0-1 range, already normalized)
-            match_score = float(similarity[j])
+            clip_score = float(similarity[j])
+            motion = frame.get("motion_score", 0)
             
-            # Scale to percentage for display
-            if match_score > 0.15:
+            # Boost score based on motion (frames with movement rank higher)
+            # motion_score typically 300-5000 for moving objects
+            motion_multiplier = 1.0 + (min(motion, 2000) / 2000.0) * 0.5  # Max +0.5 boost
+            final_score = clip_score * motion_multiplier
+            
+            if final_score > 0.15:
                 matches.append({
                     "timestamp": frame["timestamp"],
                     "frame_num": frame["frame_num"],
-                    "score": round(match_score, 3),
-                    "motion_score": frame.get("motion_score", 0)
+                    "score": round(final_score, 3),
+                    "clip_score": round(clip_score, 3),
+                    "motion_score": motion
                 })
 
         pct = min(100, ((i + batch_size) / len(search_frames)) * 100)

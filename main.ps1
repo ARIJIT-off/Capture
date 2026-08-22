@@ -55,14 +55,17 @@ function Show-Menu {
 function Set-VideoPath {
     Write-Host "Enter video file path (or drag file here):" -ForegroundColor Yellow
     $path = Read-Host
-    $path = $path -replace '"', ''
+    $path = $path -replace '"', ''  # Remove quotes if dragged
+    $path = $path.Trim()            # Remove whitespace
     
     if (Test-Path $path) {
-        $videoPath = $path
-        Write-Host "[OK] Video path set" -ForegroundColor Green
+        $script:videoPath = $path
+        Write-Host "[OK] Video path set: $path" -ForegroundColor Green
         Save-Config
+        Write-Host "[INFO] Path saved to config" -ForegroundColor Yellow
     } else {
         Write-Host "[ERROR] File not found: $path" -ForegroundColor Red
+        Write-Host "[TIP] Make sure the path exists and try again" -ForegroundColor Yellow
     }
 }
 
@@ -70,11 +73,13 @@ function Set-OutputPath {
     Write-Host "Enter output folder path:" -ForegroundColor Yellow
     $path = Read-Host
     $path = $path -replace '"', ''
+    $path = $path.Trim()
     
     New-Item -ItemType Directory -Force -Path $path | Out-Null
-    $outputPath = $path
-    Write-Host "[OK] Output path set" -ForegroundColor Green
+    $script:outputPath = $path
+    Write-Host "[OK] Output path set: $path" -ForegroundColor Green
     Save-Config
+    Write-Host "[INFO] Path saved to config" -ForegroundColor Yellow
 }
 
 function Start-Processing {

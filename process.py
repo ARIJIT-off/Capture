@@ -12,8 +12,17 @@ def load_caption_model():
         print("[INFO] Loading caption model...")
         from transformers import BlipProcessor, BlipForConditionalGeneration
         
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"[INFO] Using device: {device}")
+        
+        # Optimize CPU threads for PyTorch to avoid laptop CPU overload
+        if device == "cpu":
+            torch.set_num_threads(max(1, os.cpu_count() // 2))
+            print(f"[INFO] PyTorch CPU threads set to {torch.get_num_threads()}")
+
         processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
         model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+        model.to(device)
         print("[INFO] Caption model loaded")
         return processor, model
     except Exception as e:
@@ -27,15 +36,17 @@ def generate_frame_caption(frame, processor, model):
         return "activity"
     
     try:
+        device = next(model.parameters()).device
         pil_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        inputs = processor(pil_image, return_tensors="pt")
-        out = model.generate(**inputs, max_length=20)
+        inputs = processor(pil_image, return_tensors="pt").to(device)
+        with torch.inference_mode():
+            out = model.generate(**inputs, max_length=20)
         caption = processor.decode(out[0], skip_special_tokens=True)
         caption = caption.strip().lower()
         if len(caption) > 50:
             caption = caption[:50]
         return caption if caption else "activity"
-    except:
+    except Exception as e:
         return "activity"
 
 def process_video(video_path):
@@ -88,7 +99,11 @@ def process_video(video_path):
                     flow_score = int(np.sum(diff > 25))
                 prev_frame = gray
 
-                caption = generate_frame_caption(frame, processor, model)
+                # Skip deep learning caption generation if there is no motion
+                if motion_score < 150 and flow_score < 300:
+                    caption = "static"
+                else:
+                    caption = generate_frame_caption(frame, processor, model)
 
                 thumb = cv2.resize(frame, (224, 224))
                 thumb_path = os.path.join(

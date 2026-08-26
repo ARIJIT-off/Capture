@@ -145,6 +145,18 @@ def main():
         matches = search_with_captions(analysis_data, user_input)
         last_matches = matches
 
+        try:
+            os.makedirs(output_path, exist_ok=True)
+            summary_file = os.path.join(output_path, "summary.txt")
+            with open(summary_file, "a") as sf:
+                sf.write(f"{user_input}\n")
+                for m in matches:
+                    score_pct = int(m["score"] * 100)
+                    sf.write(f"Frame {m['frame_num']} ({m['timestamp']}s) | Query: {user_input} | Match: {score_pct}%\n")
+                sf.write("==================\n")
+        except Exception as e:
+            print(f"[WARN] Could not append to summary.txt: {e}")
+
         print("")
         if matches:
             print(f"[FOUND] {len(matches)} match(es) detected:")

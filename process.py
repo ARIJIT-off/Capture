@@ -9,7 +9,7 @@ import torch
 def load_caption_model():
     """Load BLIP image captioning model"""
     try:
-        print("[INFO] Loading caption model...")
+        print("[INFO] Loading caption model (BLIP-Large)...")
         from transformers import BlipProcessor, BlipForConditionalGeneration
         
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -20,8 +20,8 @@ def load_caption_model():
             torch.set_num_threads(max(1, os.cpu_count() // 2))
             print(f"[INFO] PyTorch CPU threads set to {torch.get_num_threads()}")
 
-        processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-        model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+        processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-large")
+        model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-large")
         model.to(device)
         print("[INFO] Caption model loaded")
         return processor, model
@@ -38,18 +38,28 @@ def generate_frame_caption(frame, processor, model):
     try:
         device = next(model.parameters()).device
         pil_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        inputs = processor(pil_image, return_tensors="pt").to(device)
+        # Prompt model with security/cctv context
+        inputs = processor(images=pil_image, text="a cctv video of", return_tensors="pt").to(device)
         with torch.inference_mode():
-            out = model.generate(**inputs, max_length=20)
+            out = model.generate(
+                **inputs,
+                num_beams=5,
+                repetition_penalty=1.2,
+                min_length=8,
+                max_length=40
+            )
         caption = processor.decode(out[0], skip_special_tokens=True)
         caption = caption.strip().lower()
-        if len(caption) > 50:
-            caption = caption[:50]
+        # Clean up prompt prefix if model returned it literally
+        if caption.startswith("a cctv video of"):
+            caption = caption[len("a cctv video of"):].strip()
+        if len(caption) > 80:
+            caption = caption[:80]
         return caption if caption else "activity"
     except Exception as e:
         return "activity"
 
-def process_video(video_path):
+def process_video(video_path, output_path=None):
     try:
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -159,6 +169,21 @@ def process_video(video_path):
         print(f"[INFO] Frames extracted     : {len(frames)}")
         print(f"[INFO] Motion windows found : {len(motion_windows)}")
         print(f"[SUCCESS] Processing complete")
+
+        if output_path:
+            try:
+                os.makedirs(output_path, exist_ok=True)
+                summary_file = os.path.join(output_path, "summary.txt")
+                with open(summary_file, "w") as sf:
+                    for f in frames:
+                        ts = f["timestamp"]
+                        next_ts = min(ts + 2.0, duration)
+                        sf.write(f"[{ts:.2f}s - {next_ts:.2f}s]: {f['caption']}\n")
+                    sf.write("==================\n")
+                print(f"[INFO] Saved frame summary: {summary_file}")
+            except Exception as e:
+                print(f"[WARN] Failed to write summary.txt: {e}")
+
         return analysis
 
     except Exception as e:
@@ -169,15 +194,16 @@ def process_video(video_path):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("[ERROR] Usage: python process.py <video_path>")
+        print("[ERROR] Usage: python process.py <video_path> [output_path]")
         sys.exit(1)
 
     video_path = sys.argv[1]
+    output_path = sys.argv[2] if len(sys.argv) > 2 else None
     if not os.path.exists(video_path):
         print(f"[ERROR] File not found: {video_path}")
         sys.exit(1)
 
-    analysis = process_video(video_path)
+    analysis = process_video(video_path, output_path)
     if analysis:
         out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analysis.json")
         with open(out, "w") as f:

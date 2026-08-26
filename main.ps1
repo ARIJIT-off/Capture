@@ -94,7 +94,7 @@ function Start-Processing {
     Write-Host "[INFO] This may take 1-3 minutes..." -ForegroundColor Yellow
     Write-Host ""
     
-    python "$scriptDir\process.py" "$videoPath"
+    python "$scriptDir\process.py" "$videoPath" "$outputPath"
     
     if ($LASTEXITCODE -eq 0) {
         Write-Host "[SUCCESS] Video processed. Ready to query." -ForegroundColor Green
